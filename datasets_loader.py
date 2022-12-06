@@ -26,60 +26,50 @@ class DatasetLoader():
             random.seed(self.args.seed)
 
         if self.args.use_tpu:
-            self.train_dataset_path = os.path.join("gs://stargan-vc2-data", "train")
-            self.test_dataset_path = os.path.join("gs://stargan-vc2-data", "test")
+            raise ValueError("This dataset is not TPU ready")
         else:
-            self.train_dataset_path = os.path.join(".", "datasets", "tf_datasets", "train")
-            self.test_dataset_path = os.path.join(".", "datasets", "tf_datasets", "test")
-
-        self.train_shard_num = self.args.num_workers*4
-        self.test_shard_num = self.args.num_workers*2
-
-        shard_pattern = "shard_{}.records"
-        self.shard_read_pattern = shard_pattern.format("*")
-        self.shard_write_pattern = shard_pattern.format("{:08d}")
-
+            self.x_npy_path = os.path.join(".", "datasets", "mel_datasets", self.args.using_jvs_id_x)
+            self.y_npy_path = os.path.join(".", "datasets", "mel_datasets", self.args.using_jvs_id_y)
 
         self.datasets_dtype = {
             'mel_x': {"numpy_dtype": np.float32, "tensor_dtype": tf.float32},
             'mel_y': {"numpy_dtype": np.float32, "tensor_dtype": tf.float32},
         }
 
-        if self.args.remake_datasets or (not self.args.use_tpu and (not os.path.isdir(self.train_dataset_path) or not os.path.isdir(self.test_dataset_path))):
+        if self.args.remake_datasets or (not self.args.use_tpu and (not os.path.isdir(self.x_npy_path) or not os.path.isdir(self.y_npy_path))):
             self.make_datasets()
 
-        train_dataset_pattern_path = os.path.join(self.train_dataset_path, self.shard_read_pattern)
-        test_dataset_pattern_path = os.path.join(self.test_dataset_path, self.shard_read_pattern)
+        x_npy_list = glob.glob(os.path.join(self.x_npy_path, "*.npy"))
+        y_npy_list = glob.glob(os.path.join(self.y_npy_path, "*.npy"))
+        max_size = min([len(x_npy_list), len(y_npy_list)])
 
-        self.train_shard_files = tf.io.matching_files(train_dataset_pattern_path)
-        self.test_shard_files = tf.io.matching_files(test_dataset_pattern_path)
-    
+        self.x_npy_list = x_npy_list[:int(max_size * self.args.preset_datafile_ratio)]
+        self.y_npy_list = y_npy_list[:int(max_size * self.args.preset_datafile_ratio)]
+        
+        self.train_size = int(len(self.x_npy_list)*self.args.train_data_ratio)
+
         self.rand_generator = rand_generator
         if self.args.mask_mode != "FIF":
             raise ValueError("Mask modes other than FIF are not implemented. They have been reported to degrade accuracy.")
 
         self.mask_region = tf.zeros([self.args.mel_size, self.args.mask_size,1])
 
-    def to_example(self, data):
-        mels_x_ndarray, mels_y_ndarray = data
-        feature = {
-            'mel_x': _bytes_feature(tf.io.serialize_tensor(mels_x_ndarray)),
-            'mel_y': _bytes_feature(tf.io.serialize_tensor(mels_y_ndarray)),
-        }
-        return tf.train.Example(features=tf.train.Features(feature=feature))
+    @tf.function
+    def load_npy(self, path):
+        mel = tf.numpy_function(np.load, [path], tf.float32)
+        return mel
+    
+    @tf.function
+    def rand_crop(self, mel_x, mel_y):
+        seed = self.rand_generator.uniform_full_int([2], dtype=tf.int32)
+        mel_x = tf.image.stateless_random_crop(mel_x, [self.args.mel_size, self.args.dataset_t_length, 1], seed)
+        
+        seed = self.rand_generator.uniform_full_int([2], dtype=tf.int32)
+        mel_y = tf.image.stateless_random_crop(mel_y, [self.args.mel_size, self.args.dataset_t_length, 1], seed)
+        
+        return mel_x, mel_y
 
-
-    def parse_example(self, example_proto):
-        feature_description = {
-            'mel_x': tf.io.FixedLenFeature([], tf.string, default_value=''),
-            'mel_y': tf.io.FixedLenFeature([], tf.string, default_value=''),
-        }
-        parsed_elem = tf.io.parse_example(example_proto, feature_description)
-        for key in feature_description.keys():
-            parsed_elem[key] = tf.io.parse_tensor(parsed_elem[key], out_type=self.datasets_dtype[key]["tensor_dtype"])
-
-        return list(parsed_elem.values())
-
+    @tf.function
     def make_mask(self, mel_x, mel_y):
         rand = self.rand_generator.uniform([], minval=0, maxval=self.args.mask_size, dtype=tf.int32)
         pad_shape = tf.pad(tf.expand_dims(tf.stack((rand, self.args.dataset_t_length - (self.args.mask_size+rand)), axis = 0), axis=0), tf.constant([[1, 1], [0,0]]))
@@ -88,28 +78,42 @@ class DatasetLoader():
         pad_shape = tf.pad(tf.expand_dims(tf.stack((rand, self.args.dataset_t_length - (self.args.mask_size+rand)), axis = 0), axis=0), tf.constant([[1, 1], [0,0]]))
         mask_y = tf.pad(self.mask_region, pad_shape, constant_values=1)
         return mel_x, mask_x, mel_y, mask_y
+
         
-        
-    def load_dataset(self, batch_size, mode, allow_tensor_cache = False):
+    def load_dataset(self, batch_size, mode, allow_tensor_cache = True):
         if mode == "train":
-            shards = tf.data.Dataset.from_tensor_slices(self.train_shard_files).cache()
-            shards = shards.shuffle(self.train_shard_num, reshuffle_each_iteration=True)
+            x_dataset = tf.data.Dataset.from_tensor_slices((self.x_npy_list[:self.train_size]))
+            y_dataset = tf.data.Dataset.from_tensor_slices((self.y_npy_list[:self.train_size]))
         elif mode == "test":
-            shards = tf.data.Dataset.from_tensor_slices(self.test_shard_files).cache()
+            x_dataset = tf.data.Dataset.from_tensor_slices((self.x_npy_list[self.train_size:]))
+            y_dataset = tf.data.Dataset.from_tensor_slices((self.y_npy_list[self.train_size:]))
         else:
             raise ValueError("allowed mode is train/test")
 
-        options = tf.data.Options()
-        options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.AUTO
-        shards = shards.with_options(options)
-        
-        dataset = shards.interleave(tf.data.TFRecordDataset, num_parallel_calls=tf.data.AUTOTUNE)
-        
+        x_dataset = x_dataset.map(map_func=self.load_npy, num_parallel_calls=tf.data.AUTOTUNE)
+        y_dataset = y_dataset.map(map_func=self.load_npy, num_parallel_calls=tf.data.AUTOTUNE)
+         
         if allow_tensor_cache:
-            dataset = dataset.cache()
+            x_dataset = x_dataset.cache()
+            y_dataset = y_dataset.cache()
+                   
+        if mode == "train":
+            x_dataset = x_dataset.shuffle(self.train_size)
+            y_dataset = y_dataset.shuffle(self.train_size)
+            
+        dataset = tf.data.Dataset.zip((x_dataset, y_dataset))
         
-        dataset = dataset.map(map_func=self.parse_example, num_parallel_calls=tf.data.AUTOTUNE)
+        options = tf.data.Options()
+        options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.OFF
+        dataset = dataset.with_options(options)
+
+        dataset = dataset.map(map_func=self.rand_crop, num_parallel_calls=tf.data.AUTOTUNE)
+        
         dataset = dataset.map(map_func=self.make_mask, num_parallel_calls=tf.data.AUTOTUNE)
+
+        if mode == "train":
+            dataset = dataset.repeat(self.args.repeat_num)
+        
         dataset = dataset.batch(batch_size, drop_remainder=True)
         dataset = dataset.prefetch(tf.data.AUTOTUNE)
         return dataset
@@ -118,15 +122,14 @@ class DatasetLoader():
     def make_datasets(self):
         pool = multiprocessing.Pool(processes = self.args.preprocess_thread_num)
 
-        npz_path = './datasets/stats'
-        os.makedirs(npz_path, exist_ok=True)
+        stats_path = './datasets/stats'
+        os.makedirs(stats_path, exist_ok=True)
         
-        def _make_ndarray(data_path_list, scaler):
-            mels_ndarray = np.empty((0, self.args.mel_size, self.args.dataset_t_length, 1), self.datasets_dtype["mel_x"]["numpy_dtype"])
-        
-            perm = np.random.permutation(len(data_path_list))
-            data_path_list = data_path_list[perm]
-            data_path_list = data_path_list[:int(len(data_path_list) * self.args.preset_datafile_ratio)]
+        def _make_ndarray(using_jvs_id, scaler):
+            data_path_list = glob.glob(os.path.join(".", "datasets", "jvs_datasets", using_jvs_id, "parallel100", "*", "*.wav"))
+     
+            np_save_path = os.path.join('.', "datasets", "mel_datasets", using_jvs_id)
+            os.makedirs(np_save_path, exist_ok=True)
 
             mel_list = []
             for mel in pool.imap_unordered(get_mels, tqdm.tqdm(data_path_list, total=len(data_path_list), desc="calc mel"), chunksize=20,):
@@ -135,72 +138,29 @@ class DatasetLoader():
             mel_concatenated = np.concatenate(mel_list, axis=0)
             scaler.fit(mel_concatenated) 
             
-            for mel in tqdm.tqdm(mel_list, total=len(mel_list), desc="make ndarray"):
+            for i, mel in enumerate(tqdm.tqdm(mel_list, total=len(mel_list), desc="make ndarray")):
+                save_path = os.path.join(np_save_path, f"mel_{i:03}")
                 mel_norm = scaler_x.transform(mel)
                 mel_norm = mel_norm.astype(self.datasets_dtype["mel_x"]["numpy_dtype"])
 
-                hop_list = list(range(0, len(mel_norm)-self.args.dataset_t_length, self.args.dataset_hop_size))
-                hop_list.append(len(mel_norm)-self.args.dataset_t_length)
-
-                for frame in tqdm.tqdm(hop_list, leave=False):
-                    mels_frame = np.copy(mel_norm[frame:frame+self.args.dataset_t_length, :]).T
-                    mels_ndarray = np.append(mels_ndarray, mels_frame[np.newaxis, :, :, np.newaxis], axis = 0)
-            
-            perm = np.random.permutation(len(mels_ndarray))
-            mels_ndarray = mels_ndarray[perm]
+                np.save(save_path, mel_norm.T[:, :, np.newaxis])
         
-            return mels_ndarray, scaler
+            return scaler
         
         
-        print("make x...")
-        data_path_list = np.array(glob.glob(os.path.join(".", "datasets", "jvs_datasets", self.args.using_jvs_id_x, "parallel100", "*", "*.wav")))
+        print("make np mel x...")
         scaler_x = StandardScaler()
         scaler_x.n_features_in_ = self.args.mel_size
         
-        mels_x_ndarray, scaler_x = _make_ndarray(data_path_list, scaler_x)
-        np.savez(npz_path + f"/{self.args.using_jvs_id_x}_stats", mean=scaler_x.mean_, scale=scaler_x.scale_)
+        scaler_x = _make_ndarray(self.args.using_jvs_id_x, scaler_x)
+        np.savez(stats_path + f"/{self.args.using_jvs_id_x}_stats", mean=scaler_x.mean_, scale=scaler_x.scale_)
         
-        print("make y...")
-        data_path_list = np.array(glob.glob(os.path.join(".", "datasets", "jvs_datasets", self.args.using_jvs_id_y, "parallel100", "*", "*.wav")))
+        print("make np mel y...")
         scaler_y = StandardScaler()
         scaler_y.n_features_in_ = self.args.mel_size
         
-        mels_y_ndarray, scaler_x = _make_ndarray(data_path_list, scaler_y)
-        np.savez(npz_path + f"/{self.args.using_jvs_id_y}_stats", mean=scaler_y.mean_, scale=scaler_y.scale_)
-
-        max_size = min([len(mels_x_ndarray), len(mels_y_ndarray)])
-
-
-        train_size = int(max_size*self.args.train_data_ratio)
-        train_dataset = tf.data.Dataset.from_tensor_slices((mels_x_ndarray[:train_size], mels_y_ndarray[:train_size]))
-        test_dataset = tf.data.Dataset.from_tensor_slices((mels_x_ndarray[train_size:max_size], mels_y_ndarray[train_size:max_size]))
-
-        ds_size_path = os.path.join(".", "datasets", "dataset_size.pkl")
-        with open(ds_size_path, 'wb') as p:
-            pickle.dump([train_size, max_size-train_size], p)
-
-        os.makedirs(self.train_dataset_path, exist_ok=True)
-        os.makedirs(self.test_dataset_path, exist_ok=True)
-
-        for i in tqdm.tqdm(range(self.train_shard_num)):
-            tfrecords_shard_path = os.path.join(self.train_dataset_path, self.shard_write_pattern.format(i))
-            shard_data = train_dataset.shard(self.train_shard_num, i)
-            with tf.io.TFRecordWriter(tfrecords_shard_path) as writer:
-                for data in shard_data:
-                    tf_example = self.to_example(data)
-                    writer.write(tf_example.SerializeToString())
-
-        for i in tqdm.tqdm(range(self.test_shard_num)):
-            tfrecords_shard_path = os.path.join(self.test_dataset_path, self.shard_write_pattern.format(i))
-            test_dataset.shard(self.test_shard_num, i)
-            with tf.io.TFRecordWriter(tfrecords_shard_path) as writer:
-                for data in shard_data:
-                    tf_example = self.to_example(data)
-                    writer.write(tf_example.SerializeToString())
-
-        del train_dataset
-        del test_dataset
-        gc.collect()
+        scaler_y = _make_ndarray(self.args.using_jvs_id_y, scaler_y)
+        np.savez(stats_path + f"/{self.args.using_jvs_id_y}_stats", mean=scaler_y.mean_, scale=scaler_y.scale_)
 
 
 if __name__ == "__main__":
@@ -214,7 +174,7 @@ if __name__ == "__main__":
 
     data = DatasetLoader(args, rand_generator)
     # data.make_datasets()
-    train_data = data.load_dataset(128, "train")
+    train_data = data.load_dataset(4, "train")
 
     print(train_data)
     for i, datas in enumerate(train_data):
@@ -227,7 +187,7 @@ if __name__ == "__main__":
         if i==3:
             break
 
-    test_data = data.load_dataset(128, "test")
+    test_data = data.load_dataset(4, "test")
 
     print(test_data)
     for i, datas in enumerate(test_data):
