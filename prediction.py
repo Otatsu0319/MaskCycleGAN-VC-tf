@@ -3,6 +3,7 @@ import logging
 import os
 
 import numpy as np
+import tensorflow as tf
 from sklearn.preprocessing import StandardScaler
 import soundfile as sf
 import librosa
@@ -11,6 +12,8 @@ from tqdm import tqdm
 
 from tensorflow_tts.configs import MultiBandMelGANGeneratorConfig, MelGANGeneratorConfig
 from tensorflow_tts.models import TFPQMF, TFMelGANGenerator
+
+import models
 
 def preprocess(wav_path, hifi = False):
     # load config
@@ -89,8 +92,19 @@ def main_multiband_hf():
     with open("./vocoder/multiband_melgan_hf/conf/multiband_melgan_hf.lju.v1.yml") as f:
         config = yaml.load(f, Loader=yaml.Loader)
         
-    mel = preprocess("./datasets/jvs_datasets/jvs002/parallel100/wav24kHz16bit/VOICEACTRESS100_001.wav", True)
+    mel = preprocess("./datasets/jvs_datasets/jvs009/parallel100/wav24kHz16bit/VOICEACTRESS100_001.wav", True)
     # mel = preprocess("/workspace/StarGAN-VC2-tf/datasets/vcc2018_datasets/vcc2018_training/VCC2TF1/10001.wav")
+
+    t = mel.shape[0]
+    t = t-t%4
+    mel = mel.T[np.newaxis, :, :t, np.newaxis]
+
+    converter = models.Generator()
+    converter(tf.random.uniform((1, 80, 64, 2)))
+    converter.load_weights("/workspace/MaskCycleGAN-VC-tf/saved_models/maskcyclegan_vc2/20221205-045950/62500/X2Y.h5")
+    mel = converter(np.concatenate([mel, np.ones(mel.shape)], axis = -1), training=False)
+
+    mel = np.squeeze(mel).T[np.newaxis, :, :]
 
     # define model and load checkpoint
     mb_melgan = TFMelGANGenerator(config=MultiBandMelGANGeneratorConfig(**config["multiband_melgan_generator_params"]),name="multiband_melgan_generator",)
@@ -99,10 +113,8 @@ def main_multiband_hf():
 
     pqmf = TFPQMF(config=MultiBandMelGANGeneratorConfig(**config["multiband_melgan_generator_params"]), name="pqmf")
 
-
-
     # melgan inference.
-    generated_subbands = mb_melgan(mel[np.newaxis, :, :])
+    generated_subbands = mb_melgan(mel)
     generated_audios = pqmf.synthesis(generated_subbands)
 
     # convert to numpy.
@@ -112,7 +124,7 @@ def main_multiband_hf():
     for i, audio in enumerate(generated_audios):
         sf.write(
             os.path.join(out_dir, f"jvs002.wav"),
-            audio[: len(mel) * config["hop_size"]],
+            audio[: t * config["hop_size"]],
             config["sampling_rate"],
             "PCM_16",
         )
@@ -128,8 +140,19 @@ def main_multiband():
     with open("./vocoder/multiband_melgan/conf/multiband_melgan.v1.yaml") as f:
         config = yaml.load(f, Loader=yaml.Loader)
         
-    mel = preprocess("./datasets/jvs_datasets/jvs002/parallel100/wav24kHz16bit/VOICEACTRESS100_001.wav")
+    mel = preprocess("./datasets/jvs_datasets/jvs009/parallel100/wav24kHz16bit/VOICEACTRESS100_001.wav")
     # mel = preprocess("/workspace/StarGAN-VC2-tf/datasets/vcc2018_datasets/vcc2018_training/VCC2TF1/10001.wav")
+
+    t = mel.shape[0]
+    t = t-t%4
+    mel = mel.T[np.newaxis, :, :t, np.newaxis]
+
+    converter = models.Generator()
+    converter(tf.random.uniform((1, 80, 64, 2)))
+    converter.load_weights("/workspace/MaskCycleGAN-VC-tf/saved_models/maskcyclegan_vc2/20221205-045950/62500/X2Y.h5")
+    # mel = converter(np.concatenate([mel, np.ones(mel.shape)], axis = -1), training=False)
+
+    mel = np.squeeze(mel).T[np.newaxis, :, :]
 
     # define model and load checkpoint
     mb_melgan = TFMelGANGenerator(config=MultiBandMelGANGeneratorConfig(**config["multiband_melgan_generator_params"]),name="multiband_melgan_generator",)
@@ -141,7 +164,7 @@ def main_multiband():
 
 
     # melgan inference.
-    generated_subbands = mb_melgan(mel[np.newaxis, :, :])
+    generated_subbands = mb_melgan(mel)
     generated_audios = pqmf.synthesis(generated_subbands)
 
     # convert to numpy.
@@ -151,7 +174,7 @@ def main_multiband():
     for i, audio in enumerate(generated_audios):
         sf.write(
             os.path.join(out_dir, f"jvs002.wav"),
-            audio[: len(mel) * config["hop_size"]],
+            audio[: t * config["hop_size"]],
             config["sampling_rate"],
             "PCM_16",
         )
@@ -166,17 +189,27 @@ def main():
     with open("./vocoder/melgan/conf/melgan.v1.yaml") as f:
         config = yaml.load(f, Loader=yaml.Loader)
         
-    # mel = preprocess("./datasets/jvs_datasets/jvs002/parallel100/wav24kHz16bit/VOICEACTRESS100_001.wav")
-    mel = preprocess("/workspace/StarGAN-VC2-tf/datasets/vcc2018_datasets/vcc2018_training/VCC2TF1/10001.wav")
+    mel = preprocess("./datasets/jvs_datasets/jvs009/parallel100/wav24kHz16bit/VOICEACTRESS100_001.wav")
+    # mel = preprocess("/workspace/StarGAN-VC2-tf/datasets/vcc2018_datasets/vcc2018_training/VCC2TF1/10001.wav")
 
+    t = mel.shape[0]
+    t = t-t%4
+    mel = mel.T[np.newaxis, :, :t, np.newaxis]
+
+    converter = models.Generator()
+    converter(tf.random.uniform((1, 80, 64, 2)))
+    converter.load_weights("/workspace/MaskCycleGAN-VC-tf/saved_models/maskcyclegan_vc2/20221205-045950/60000/X2Y.h5")
+    mel = converter(np.concatenate([mel, np.ones(mel.shape)], axis = -1), training=False)
+
+    mel = np.squeeze(mel).T[np.newaxis, :, :]
+    
     # define model and load checkpoint
     melgan = TFMelGANGenerator(config=MelGANGeneratorConfig(**config["melgan_generator_params"]), name="melgan_generator",)
     melgan._build()
     melgan.load_weights("./vocoder/melgan/checkpoints/generator-1670000.h5")
 
     # melgan inference.
-    generated_audios = melgan(mel[np.newaxis, :, :])
-
+    generated_audios = melgan(mel)
     # convert to numpy.
     generated_audios = generated_audios.numpy()  # [B, T]
 
@@ -184,11 +217,13 @@ def main():
     for i, audio in enumerate(generated_audios):
         sf.write(
             os.path.join(out_dir, f"jvs002.wav"),
-            audio[: len(mel) * config["hop_size"]],
+            audio[: t * config["hop_size"]],
             config["sampling_rate"],
             "PCM_16",
         )
 
 
 if __name__ == "__main__":
-    main_multiband_hf()
+    # main_multiband_hf()
+    main_multiband()
+    # main()
