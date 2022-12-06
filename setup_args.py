@@ -27,15 +27,15 @@ class Args:
         self.remake_datasets = False
         self.shuffle_buffer_size = 100
 
-        self.repeat_num = 1
+        self.repeat_num = 8
         self.iterations = 5*(10**5) // self.repeat_num
-        self.train_batch_size = 128 # org:1
-        self.test_batch_size = 256
+        self.train_batch_size = 64 # org:1
+        self.test_batch_size = 4
         self.dataset_t_length = 64 # 0.75 sec
         self.dataset_hop_size = 32
-        self.logging_interval = 1 // self.repeat_num
-        self.sample_interval = 500 // self.repeat_num
-        self.checkpoint_interval = 10 // self.repeat_num
+        self.logging_interval = 5000 // self.repeat_num
+        self.sample_interval = 10000 // self.repeat_num
+        self.checkpoint_interval = 5000 // self.repeat_num
         self.print_log = False
         
         self.mask_mode = "FIF" # FIF(consecutive frames), FIF_ns(discontinuous frame), FIS(Mask spectral bands randomly), FIP(Mask Points (pixels? Similar to Dropout))
@@ -57,10 +57,10 @@ class Args:
         self.tensorboard_log_dir = "logs"
         self.save_profile = False
 
-        self.restore_bool = False
+        self.restore_bool = True
         if self.restore_bool:
-            self.start_iteration = 13000
-            self.datetime = "20221121-093359"
+            self.start_iteration = 25625
+            self.datetime = "20221205-045950"
             
             if self.id_rate <= self.start_iteration:
                 self.lambda_id = 0.0
