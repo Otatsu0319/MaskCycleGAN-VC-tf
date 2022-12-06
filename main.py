@@ -23,7 +23,7 @@ if __name__ == "__main__":
         [tf.config.experimental.set_memory_growth(gpu, True) for gpu in gpus]
 
         # https://github.com/tensorflow/tensorflow/issues/56661#issuecomment-1213286290
-        tf.config.set_logical_device_configuration(gpus[0],[tf.config.LogicalDeviceConfiguration(memory_limit=11200)]) 
+        # tf.config.set_logical_device_configuration(gpus[0],[tf.config.LogicalDeviceConfiguration(memory_limit=11200)]) 
     
     if args.mixed_precision:
         tf.keras.mixed_precision.set_global_policy("mixed_float16" if not args.use_tpu else "mixed_bfloat16")
