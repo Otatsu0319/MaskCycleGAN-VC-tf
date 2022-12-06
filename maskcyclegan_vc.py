@@ -35,9 +35,9 @@ class MaskCycleGAN_VC():
             self.distribute_strategy = tf.distribute.MirroredStrategy(devices=["/gpu:0"]) # only 1 gpu using. if you using 2 gpu : devices=["/gpu:0", "/gpu:1"]
             root_dir = os.path.dirname(__file__)
         
-        self.checkpoint_dir = os.path.join(root_dir, "training_checkpoints", self.model_name, "ckpt")
+        self.checkpoint_dir = os.path.join(root_dir, "training_checkpoints", self.model_name, self.datetime, "ckpt")
         self.log_dir = os.path.join(root_dir, self.tensorboard_log_dir, self.model_name, self.datetime)
-        self.savedmodel_dir = os.path.join(root_dir, "saved_models", self.model_name, self.datetime)
+        self.savedmodel_dir = os.path.join(root_dir, "saved_weights", self.model_name, self.datetime)
 
         self._compile_learn_function()
         
@@ -476,9 +476,10 @@ class MaskCycleGAN_VC():
             tf.summary.text("args_summary", json.dumps(self.args_dict), 0)
 
 
-        with open(os.path.join(".", "datasets", "dataset_size.pkl"), 'rb') as p:
-            train_size, test_size = pickle.load(p)  
-        train_size, test_size = int(train_size/self.train_batch_size * self.repeat_num), test_size//self.test_batch_size
+        # with open(os.path.join(".", "datasets", "dataset_size.pkl"), 'rb') as p:
+        #     train_size, test_size = pickle.load(p)  
+        # print(f"base data size :: train : {train_size}, test : {test_size}")
+        # train_size, test_size = int(train_size/self.train_batch_size * self.repeat_num), test_size//self.test_batch_size
 
 
         for iteration in tqdm(range(self.start_iteration, self.iterations), initial=self.start_iteration, total=self.iterations):
